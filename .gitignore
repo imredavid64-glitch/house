@@ -1,0 +1,17 @@
+# PocketBase runtime data (keep local)
+pocketbase/pb_data/
+pocketbase/pb_backup/
+pocketbase/pocketbase.exe
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.log
+*.tmp
