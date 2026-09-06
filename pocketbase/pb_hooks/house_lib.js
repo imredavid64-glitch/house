@@ -720,12 +720,17 @@ function voteOnProposal(app, user, proposalId, value) {
     vote.set("proposal", proposalId);
     vote.set("user", user.id);
   }
-  vote.set("value", value);
+  vote.set("choice", value);
   app.save(vote);
 
   // tally
-  const yes = app.countRecords("deletion_votes", "proposal.id = {:p} && value = 1", { p: proposalId });
-  const no = app.countRecords("deletion_votes", "proposal.id = {:p} && value = -1", { p: proposalId });
+  const votes = app.findRecordsByFilter("deletion_votes", "proposal.id = {:p}", "", 0, 0, { p: proposalId });
+  let yes = 0, no = 0;
+  for (let i = 0; i < votes.length; i++) {
+    const c = Number(votes[i].get("choice")) || 0;
+    if (c > 0) yes++;
+    else if (c < 0) no++;
+  }
   prop.set("votes_yes", yes);
   prop.set("votes_no", no);
   app.save(prop);

@@ -229,7 +229,7 @@ routerAdd("POST", "/api/house/deletion/proposals/{id}/vote", function (e) {
   const H = require(__hooks + "/house_lib.js");
   const id = e.request.pathValue("id");
   const body = e.requestInfo().body;
-  const value = body ? Number(body.value) : 0;
+  const value = body ? Number(body.choice) : 0;
   let result;
   try {
     result = H.voteOnProposal(e.app, e.auth, id, value);
