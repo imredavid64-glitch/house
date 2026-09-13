@@ -1,3 +1,5 @@
+import { pb, api } from './pb.js';
+
 export async function compressImage(file, maxDim = 1400, quality = 0.82) {
   try {
     try {
@@ -77,4 +79,20 @@ export async function compressFile(file) {
   }
 
   return { file: stored, algorithm, original_size: file.size, stored_size: stored.size };
+}
+
+export async function compressFiles(files) {
+  const processed = [];
+  let origTotal = 0;
+  let storedTotal = 0;
+
+  for (const f of files) {
+    const res = await compressFile(f);
+    processed.push(res.file);
+    origTotal += res.original_size;
+    storedTotal += res.stored_size;
+  }
+
+  const savedPct = origTotal > 0 ? Math.round(((origTotal - storedTotal) / origTotal) * 100) : 0;
+  return { files: processed, originalTotal: origTotal, storedTotal, savedPct };
 }

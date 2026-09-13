@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  # PocketBase backend
+  pocketbase:
+    image: ghcr.io/pocketbase/pocketbase:0.25
+    container_name: house-pocketbase
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - ./pocketbase/pb_data:/pb_data
+      - ./pocketbase/pb_migrations:/pb_migrations
+      - ./pocketbase/pb_hooks:/pb_hooks
+    environment:
+      - PB_ENCRYPTION_KEY=${PB_ENCRYPTION_KEY:-}
+      - PB_PUBLIC_DIR=/pb_public
+    command: ["serve", "--http=0.0.0.0:8090", "--dir=/pb_data", "--migrationsDir=/pb_migrations", "--hooksDir=/pb_hooks"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Frontend (production build served by nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: house-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      - pocketbase
+    environment:
+      - VITE_API_URL=http://pocketbase:8090
+
+  # Optional: Caddy reverse proxy for HTTPS + custom domain
+  # caddy:
+  #   image: caddy:2
+  #   container_name: house-caddy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #     - "443:443/udp"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy_data:/data
+  #     - caddy_config:/config
+  #   depends_on:
+  #     - pocketbase
+  #     - frontend
+
+volumes:
+  # caddy_data:
+  # caddy_config:
+
+networks:
+  default:
+    name: house-network

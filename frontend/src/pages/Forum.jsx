@@ -67,7 +67,6 @@ export default function Forum() {
       if (postType === 'poll' && pollOpts.trim()) {
         const opts = pollOpts.split('\n').map((l) => l.trim()).filter(Boolean);
         if (opts.length >= 2) {
-          const pRes = await fetch(`${API_URL}/api/house/posts/_pending`, { method: 'POST' });
           form.append('_type', 'poll');
         }
       }
