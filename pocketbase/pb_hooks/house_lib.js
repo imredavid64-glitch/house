@@ -13,22 +13,39 @@ function daysAgoISO(days) {
   return new Date(Date.now() - days * 86400000).toISOString();
 }
 
+// PB 0.40+ JSVM returns json fields as byte arrays (char codes of the JSON text).
+// Decode any json-ish value back into real JS data.
+function decodeJsonValue(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") {
+    try { return JSON.parse(v); } catch (e) { return v; }
+  }
+  if (Array.isArray(v)) {
+    const looksLikeBytes = v.length > 0 && v.every(function (b) { return typeof b === "number" && b >= 0 && b <= 255; });
+    if (looksLikeBytes) {
+      let s = "";
+      for (let i = 0; i < v.length; i++) s += String.fromCharCode(v[i]);
+      try { return JSON.parse(s); } catch (e) { return v; }
+    }
+    return v;
+  }
+  return v;
+}
+
 function safeJson(v, fallback) {
   if (v === null || v === undefined) return fallback || {};
-  try {
-    if (typeof v === "object") return v;
-    return JSON.parse(v);
-  } catch (e) {
-    return fallback || {};
-  }
+  const d = decodeJsonValue(v);
+  if (d === null || d === undefined) return fallback || {};
+  if (typeof d === "object") return d;
+  try { return JSON.parse(d); } catch (e) { return fallback || {}; }
 }
 
 function setting(app, key, fallback) {
   try {
     const rec = app.findFirstRecordByFilter("app_settings", "key = {:key}", { key: key });
-    const v = rec.get("value");
-    if (v === null || v === undefined || v === "") return fallback;
-    return v;
+    const d = decodeJsonValue(rec.get("value"));
+    if (d === null || d === undefined || d === "") return fallback;
+    return d;
   } catch (e) {
     return fallback;
   }
@@ -227,10 +244,17 @@ function generateInviteKeys(app, count, adminId) {
 }
 
 function registerWithKey(app, body) {
-  const key = body.get ? body.get("key") : body.key;
-  const username = body.get ? body.get("username") : body.username;
-  const email = body.get ? body.get("email") : body.email;
-  const password = body.get ? body.get("password") : body.password;
+  const get = function (names) {
+    for (let i = 0; i < names.length; i++) {
+      const v = body.get ? body.get(names[i]) : body[names[i]];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+    return "";
+  };
+  const key = get(["key", "invite_key"]);
+  const username = get(["username", "name"]);
+  const email = get(["email"]);
+  const password = get(["password"]);
 
   if (!key || !username || !email || !password) {
     throw new BadRequestError("key, username, email and password are required");
@@ -364,41 +388,109 @@ function fetchHackerNews(app) {
   }
 }
 
-function fetchReddit(app, subreddit, category, sourceName) {
+function stripTags(html) {
+  return String(html || "")
+    .replace(/<!\[CDATA\[|\]\]>/g, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&#\d+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function bytesToString(b) {
+  if (typeof b === "string") return b;
+  if (b === null || b === undefined) return "";
+  try {
+    if (b.length !== undefined) {
+      let s = "";
+      const n = b.length;
+      for (let i = 0; i < n; i++) {
+        s += String.fromCharCode(b[i] & 0xff);
+      }
+      return s;
+    }
+  } catch (e) {}
+  return String(b);
+}
+
+function parseRss(text) {
+  const items = [];
+  const re = /<item[\s>][\s\S]*?<\/item>/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const block = m[0];
+    const title = stripTags((/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/.exec(block) || [])[1] || "");
+    if (!title) continue;
+    let link = (/(<link[^>]*>)([\s\S]*?)(<\/link>)/.exec(block) || [])[2] || "";
+    if (link.indexOf("http") !== 0) {
+      const self = (/<link[^>]*href="([^"]+)"[^>]*\/?>/.exec(block) || [])[1] || "";
+      if (self.indexOf("http") === 0) link = self;
+    }
+    const desc = stripTags((/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/.exec(block) || [])[1] || "");
+    const pub = (/<pubDate>([\s\S]*?)<\/pubDate>/.exec(block) || [])[1] || "";
+    const thumb = (/<media:thumbnail[^>]*url="([^"]+)"/.exec(block) || [])[1] || "";
+    items.push({ title: title, link: link, description: desc, pubDate: pub, thumbnail: thumb });
+  }
+  return items;
+}
+
+function fetchRss(app, feedUrl, category, sourceName) {
   try {
     const res = $http.send({
-      url: "https://www.reddit.com/r/" + subreddit + "/hot.json?limit=12&raw_json=1",
-      headers: { "user-agent": "house-friend-app/1.0" },
-      timeout: 20,
+      url: feedUrl,
+      headers: { "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" },
+      timeout: 25,
     });
-    if (res.statusCode !== 200 || !res.json || !res.json.data) return;
-    const children = res.json.data.children || [];
+    if (res.statusCode !== 200) {
+      app.logger().info("RSS " + category + " status " + res.statusCode + " for " + feedUrl);
+      return;
+    }
+    const items = parseRss(bytesToString(res.body));
     let count = 0;
-    for (let i = 0; i < children.length && count < 8; i++) {
-      const d = children[i].data;
-      if (!d || d.stickied || d.over_18 || !d.title) continue;
-      let thumb = d.thumbnail;
-      if (typeof thumb !== "string" || thumb.indexOf("http") !== 0) thumb = "";
+    for (let i = 0; i < items.length && count < 8; i++) {
+      const it = items[i];
+      if (!it.title || it.title.length < 4) continue;
+      let published = "";
+      if (it.pubDate && !isNaN(new Date(it.pubDate).getTime())) {
+        published = new Date(it.pubDate).toISOString();
+      }
       upsertNews(app, category, {
-        title: d.title,
-        summary: (d.selftext || "").substring(0, 400),
-        url: "https://www.reddit.com" + (d.permalink || ""),
-        thumbnail_url: thumb,
+        title: it.title,
+        summary: (it.description || "").substring(0, 400),
+        url: it.link || feedUrl,
+        thumbnail_url: it.thumbnail || "",
         source_name: sourceName,
-        published_at: new Date(d.created_utc * 1000).toISOString(),
-        metadata: { subreddit: subreddit, score: d.score, comments: d.num_comments },
+        published_at: published || nowISO(),
+        metadata: { feed: feedUrl },
       });
       count++;
     }
+    if (count === 0) app.logger().info("RSS " + category + " parsed 0 items from " + feedUrl);
   } catch (e) {
-    app.logger().error("Reddit fetch failed " + subreddit, "error", e);
+    app.logger().error("RSS fetch failed " + feedUrl, "error", e);
   }
 }
 
 function fetchJikan(app) {
+  var res = null;
+  for (var attempt = 0; attempt < 2 && res === null; attempt++) {
+    try {
+      res = $http.send({ url: "https://api.jikan.moe/v4/top/anime?filter=airing&limit=10", timeout: 25 });
+      if (res.statusCode !== 200) {
+        app.logger().info("Jikan attempt " + attempt + " status " + res.statusCode);
+        res = null;
+      }
+    } catch (e) {
+      res = null;
+    }
+  }
   try {
-    const res = $http.send({ url: "https://api.jikan.moe/v4/top/anime?filter=airing&limit=10", timeout: 20 });
-    if (res.statusCode !== 200 || !res.json || !res.json.data) return;
+    if (!res || res.statusCode !== 200 || !res.json || !res.json.data) return;
     const items = res.json.data || [];
     for (let i = 0; i < items.length && i < 8; i++) {
       const d = items[i];
@@ -443,13 +535,17 @@ function fetchMinecraft(app) {
 
 function refreshAllNews(app) {
   fetchHackerNews(app);
-  fetchReddit(app, "games", "gaming", "r/games");
-  fetchReddit(app, "smashbros", "smash", "r/smashbros");
+  fetchRss(app, "https://feeds.feedburner.com/ign/all", "gaming", "IGN");
+  fetchRss(app, "https://www.polygon.com/rss/index.xml", "gaming", "Polygon");
+  fetchRss(app, "https://www.dualshockers.com/feed/", "gaming", "DualShockers");
+  fetchRss(app, "https://www.dualshockers.com/feed/", "smash", "DualShockers");
+  fetchRss(app, "https://www.siliconera.com/feed/", "smash", "Siliconera");
+  fetchRss(app, "https://www.nintendolife.com/feeds/news", "smash", "Nintendo Life");
   fetchJikan(app);
   fetchMinecraft(app);
   capCategory(app, "tech", 40);
-  capCategory(app, "gaming", 40);
-  capCategory(app, "smash", 40);
+  capCategory(app, "gaming", 60);
+  capCategory(app, "smash", 60);
   capCategory(app, "anime", 40);
   capCategory(app, "minecraft", 40);
 }
@@ -887,9 +983,102 @@ function autoPropose(app) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// post/comment voting (votes collection)
+// ---------------------------------------------------------------------------
+
+function voteOnContent(app, user, collectionName, fieldName, recordId, value) {
+  if (value !== 1 && value !== -1 && value !== 0) throw new BadRequestError("value must be 1, -1 or 0");
+  let target;
+  try { target = app.findRecordById(collectionName, recordId); } catch (e) { throw new NotFoundError("Not found"); }
+
+  let vote = null;
+  try {
+    vote = app.findFirstRecordByFilter("votes", fieldName + ".id = {:t} && user.id = {:u}", { t: recordId, u: user.id });
+  } catch (e) {}
+
+  let my = 0;
+  if (value === 0) {
+    if (vote) { my = 0; app.delete(vote); }
+    else my = 0;
+  } else if (vote) {
+    const cur = Number(vote.get("value"));
+    if (cur === value) { my = 0; app.delete(vote); }
+    else { my = value; vote.set("value", value); app.save(vote); }
+  } else {
+    my = value;
+    const v = new Record(app.findCollectionByNameOrId("votes"));
+    v.set("user", user.id);
+    v.set(fieldName, recordId);
+    v.set("value", value);
+    v.set("category", collectionName);
+    app.save(v);
+  }
+  const ups = app.findRecordsByFilter("votes", fieldName + ".id = {:t} && value > 0", "", 0, 0, { t: recordId });
+  const downs = app.findRecordsByFilter("votes", fieldName + ".id = {:t} && value < 0", "", 0, 0, { t: recordId });
+  target.set("upvotes", ups.length);
+  target.set("downvotes", downs.length);
+  app.save(target);
+  return { upvotes: ups.length, downvotes: downs.length, my: my };
+}
+
+// ---------------------------------------------------------------------------
+// storage_files registration (post-upload file tracking)
+// ---------------------------------------------------------------------------
+
+function registerStorageFiles(app, record) {
+  try {
+    const fsys = app.newFilesystem();
+    try {
+      const coll = record.collection();
+      var fields = [];
+      try { fields = coll.fields.items ? coll.fields.items() : []; } catch (err) {}
+      if (!fields.length) try { fields = coll.fields.all ? coll.fields.all() : []; } catch (err) {}
+      for (let i = 0; i < fields.length; i++) {
+        const f = fields[i];
+        if (f.type !== "file") continue;
+        var names = record.get(f.name) || [];
+        if (typeof names === "string") names = names ? names.split(",") : [];
+        if (!names.length) continue;
+        const src = coll.name === "messages" ? "chat" : coll.name === "posts" ? "post" : coll.name === "users" ? "avatar" : "other";
+        var files = [];
+        try { files = fsys.list(coll.id + "/" + record.id + "/"); } catch (err) { files = []; }
+        for (let j = 0; j < names.length; j++) {
+          const stored = String(names[j]);
+          if (!stored) continue;
+          let size = 0;
+          for (let k = 0; k < files.length; k++) {
+            if (String(files[k].name).indexOf(stored) >= 0) { size = files[k].size; break; }
+          }
+          if (!size) continue;
+          try {
+            app.findFirstRecordByFilter("storage_files", "record_id = {:r} && stored_name = {:n}", { r: record.id, n: stored });
+            continue;
+          } catch (e) {}
+          const rec = new Record(app.findCollectionByNameOrId("storage_files"));
+          rec.set("owner", record.get("user") || record.id);
+          rec.set("source", src);
+          rec.set("record_id", record.id);
+          rec.set("field", f.name);
+          rec.set("original_name", stored);
+          rec.set("stored_name", stored);
+          const ext = stored.indexOf(".") >= 0 ? stored.split(".").pop().toLowerCase() : "";
+          rec.set("mime_type", ext);
+          rec.set("original_size", size);
+          rec.set("stored_size", size);
+          rec.set("algorithm", ext === "webp" ? "webp" : ext === "gz" ? "gzip" : "none");
+          rec.set("category", src);
+          app.save(rec);
+        }
+      }
+    } finally { fsys.close(); }
+  } catch (e) {}
+}
+
 module.exports = {
   nowISO: nowISO,
   daysAgoISO: daysAgoISO,
+  decodeJsonValue: decodeJsonValue,
   setting: setting,
   setSetting: setSetting,
   notify: notify,
@@ -914,6 +1103,9 @@ module.exports = {
   executeProposal: executeProposal,
   processExpiredProposals: processExpiredProposals,
   autoPropose: autoPropose,
-  refreshNewsCategory: fetchReddit,
+  voteOnContent: voteOnContent,
+  registerStorageFiles: registerStorageFiles,
+  fetchRss: fetchRss,
+  refreshNewsCategory: fetchRss,
   setNewsTTL: null,
 };

@@ -23,10 +23,10 @@ export default function Auth({ onAuth }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            key: invite.trim(),
+            username: name || identity.split('@')[0],
             email: identity,
             password,
-            name: name || identity.split('@')[0],
-            invite_key: invite.trim(),
           }),
         });
         if (!res.ok) {

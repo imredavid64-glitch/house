@@ -1,5 +1,3 @@
-import { pb, api } from './lib/pb.js';
-
 export async function compressImage(file, maxDim = 1400, quality = 0.82) {
   try {
     try {

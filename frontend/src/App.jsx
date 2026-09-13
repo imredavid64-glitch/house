@@ -1,11 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { pb, API_URL } from './lib/pb.js';
+import { setProfileHandler } from './lib/nav.js';
 import Auth from './pages/Auth.jsx';
 import Chat from './pages/Chat.jsx';
 import Forum from './pages/Forum.jsx';
 import News from './pages/News.jsx';
 import Gaming from './pages/Gaming.jsx';
 import Storage from './pages/Storage.jsx';
+import Admin from './pages/Admin.jsx';
+import ProfileModal from './components/ProfileModal.jsx';
+import NotificationsBell from './components/NotificationsBell.jsx';
 
 const tabs = [
   { id: 'chat', label: 'Chat' },
@@ -17,15 +21,25 @@ const tabs = [
 
 export default function App() {
   const [authed, setAuthed] = useState(pb.authStore.isValid);
-  const [tab, setTab] = useState(() => location.hash.slice(1) || 'chat');
+  const [tab, setTab] = useState(() => location.hash.split('/')[1] || 'chat');
+  const [profile, setProfile] = useState(null);
+  const me = pb.authStore.model;
 
   useEffect(() => {
-    window.addEventListener('hashchange', () =>
-      setTab(location.hash.slice(1) || 'chat')
-    );
+    const onHash = () => setTab(location.hash.split('/')[1] || 'chat');
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  useEffect(() => {
+    setProfileHandler(setProfile);
+    return () => setProfileHandler(null);
   }, []);
 
   if (!authed) return <Auth onAuth={() => setAuthed(true)} />;
+
+  const isAdmin = me && me.role === 'admin';
+  const meName = (me && (me.username || me.name || me.email)) || 'Me';
 
   return (
     <div>
@@ -39,10 +53,27 @@ export default function App() {
               {t.label}
             </a>
           ))}
+          {isAdmin && (
+            <a href="#/admin" className={tab === 'admin' ? 'active' : ''}>
+              Admin
+            </a>
+          )}
           <div style={{ flex: 1 }} />
+          <NotificationsBell />
           <a
             className="btn small ghost"
-            onClick={async (e) => {
+            href="#/"
+            onClick={(e) => {
+              e.preventDefault();
+              if (me) setProfile(me.id);
+            }}
+            title="View profile"
+          >
+            {meName.slice(0, 10)}
+          </a>
+          <a
+            className="btn small ghost"
+            onClick={(e) => {
               e.preventDefault();
               pb.authStore.clear();
               setAuthed(false);
@@ -59,7 +90,9 @@ export default function App() {
         {tab === 'news' && <News />}
         {tab === 'gaming' && <Gaming />}
         {tab === 'storage' && <Storage />}
+        {tab === 'admin' && isAdmin && <Admin />}
       </div>
+      {profile && <ProfileModal userId={profile} onClose={() => setProfile(null)} />}
     </div>
   );
 }

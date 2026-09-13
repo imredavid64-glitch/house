@@ -86,6 +86,13 @@ routerAdd("GET", "/api/house/storage", function (e) {
   });
 }, $apis.requireAuth());
 
+// ---- storage re-scan (auth) ----
+routerAdd("POST", "/api/house/storage/refresh", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const state = H.refreshStorageCache(e.app);
+  return e.json(200, { refreshed: true, state: state });
+}, $apis.requireAuth());
+
 // ---- news (auth) ----
 routerAdd("GET", "/api/house/news", function (e) {
   const H = require(__hooks + "/house_lib.js");
@@ -103,7 +110,7 @@ routerAdd("GET", "/api/house/news", function (e) {
       url: items[i].get("url"),
       thumbnail_url: items[i].get("thumbnail_url"),
       source_name: items[i].get("source_name"),
-      metadata: items[i].get("metadata"),
+      metadata: H.decodeJsonValue(items[i].get("metadata")),
       published_at: items[i].get("published_at"),
     });
   }
@@ -192,6 +199,135 @@ routerAdd("POST", "/api/house/smash/matches", function (e) {
   return e.json(200, { success: true, id: rec.id });
 }, $apis.requireAuth());
 
+// ---- smash match history (auth) ----
+routerAdd("GET", "/api/house/smash/matches", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const records = e.app.findRecordsByFilter("smash_matches", "", "-created", 200, 0);
+  const out = [];
+  for (let i = 0; i < records.length; i++) {
+    const m = records[i];
+    out.push({
+      id: m.id,
+      player1: m.get("player1"),
+      player2: m.get("player2"),
+      winner: m.get("winner"),
+      character1: m.get("character1"),
+      character2: m.get("character2"),
+      stage: m.get("stage"),
+      is_ranked: m.getBool("is_ranked"),
+      created_by: m.get("created_by"),
+      created: m.get("created"),
+    });
+  }
+  return e.json(200, { matches: out });
+}, $apis.requireAuth());
+
+// ---- poll on a post (auth: GET fetch, POST create+vote) ----
+routerAdd("GET", "/api/house/posts/{id}/poll", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  let poll = null;
+  try { poll = e.app.findFirstRecordByFilter("polls", "post = {:p}", { p: id }); } catch (err) {}
+  if (!poll) return e.json(200, { poll: null });
+  const options = H.decodeJsonValue(poll.get("options")) || [];
+  const voters = H.decodeJsonValue(poll.get("voters")) || [];
+  const counts = options.map(function (_, i) {
+    return voters.filter(function (v) { return Number(v.option) === i; }).length;
+  });
+  let chosen = null;
+  for (let i = 0; i < voters.length; i++) {
+    if (voters[i].user === e.auth.id) chosen = Number(voters[i].option);
+  }
+  const total = voters.length;
+  return e.json(200, { poll: { options: options, counts: counts, chosen: chosen, total: total, ends_at: poll.get("ends_at") } });
+}, $apis.requireAuth());
+
+routerAdd("POST", "/api/house/posts/{id}/poll", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  let poll = null;
+  try { poll = e.app.findFirstRecordByFilter("polls", "post = {:p}", { p: id }); } catch (err) {}
+  if (!poll) {
+    let options = body && body.options;
+    if (!Array.isArray(options) || options.length < 2) throw new BadRequestError("options must have at least 2 entries");
+    options = options.map(function (o) { return String(o).slice(0, 120); });
+    const rec = new Record(e.app.findCollectionByNameOrId("polls"));
+    rec.set("post", id);
+    rec.set("options", options);
+    rec.set("voters", []);
+    if (body && body.ends_at) rec.set("ends_at", body.ends_at);
+    e.app.save(rec);
+    return e.json(200, { success: true, created: true, poll: { options: options, counts: options.map(function (_, i) { return 0; }), chosen: null, total: 0 } });
+  }
+  const options = H.decodeJsonValue(poll.get("options")) || [];
+  const optIdx = Math.floor(Number(body ? body.option_index : NaN));
+  if (isNaN(optIdx) || optIdx < 0 || optIdx >= options.length) throw new BadRequestError("bad option_index");
+  let voters = H.decodeJsonValue(poll.get("voters")) || [];
+  voters = voters.filter(function (v) { return v.user !== e.auth.id; });
+  voters.push({ user: e.auth.id, option: optIdx });
+  poll.set("voters", voters);
+  e.app.save(poll);
+  const counts = options.map(function (_, i) {
+    return voters.filter(function (v) { return Number(v.option) === i; }).length;
+  });
+  return e.json(200, { success: true, poll: { options: options, counts: counts, chosen: optIdx, total: voters.length } });
+}, $apis.requireAuth());
+
+// ---- post/comment voting via dedicated votes collection (auth) ----
+routerAdd("POST", "/api/house/posts/{id}/vote", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  const value = body ? Math.floor(Number(body.value)) : 0;
+  try {
+    const result = H.voteOnContent(e.app, e.auth, "posts", "post", id, value);
+    return e.json(200, { success: true, upvotes: result.upvotes, downvotes: result.downvotes, my: result.my });
+  } catch (err) {
+    throw new BadRequestError(String(err));
+  }
+}, $apis.requireAuth());
+
+routerAdd("POST", "/api/house/comments/{id}/vote", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  const value = body ? Math.floor(Number(body.value)) : 0;
+  try {
+    const result = H.voteOnContent(e.app, e.auth, "comments", "comment", id, value);
+    return e.json(200, { success: true, upvotes: result.upvotes, downvotes: result.downvotes, my: result.my });
+  } catch (err) {
+    throw new BadRequestError(String(err));
+  }
+}, $apis.requireAuth());
+
+// ---- toggle a message reaction (auth, any member can react) ----
+routerAdd("POST", "/api/house/messages/{id}/reaction", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  const emoji = String(body ? body.emoji : "").trim();
+  if (!emoji) throw new BadRequestError("emoji is required");
+  let msg;
+  try {
+    msg = e.app.findRecordById("messages", id);
+  } catch (err) {
+    throw new NotFoundError("Message not found");
+  }
+  let reactions = H.decodeJsonValue(msg.get("reactions"));
+  if (!reactions || typeof reactions !== "object" || Array.isArray(reactions)) reactions = {};
+  let arr = reactions[emoji] || [];
+  if (!Array.isArray(arr)) arr = [];
+  const idx = arr.indexOf(e.auth.id);
+  if (idx >= 0) arr = arr.slice(0, idx).concat(arr.slice(idx + 1));
+  else arr = arr.concat([e.auth.id]);
+  if (arr.length) reactions[emoji] = arr;
+  else delete reactions[emoji];
+  msg.set("reactions", reactions);
+  e.app.save(msg);
+  return e.json(200, { success: true, reactions: reactions });
+}, $apis.requireAuth());
+
 // ---- deletion proposals (auth) ----
 routerAdd("GET", "/api/house/deletion/proposals", function (e) {
   const H = require(__hooks + "/house_lib.js");
@@ -205,7 +341,7 @@ routerAdd("GET", "/api/house/deletion/proposals", function (e) {
       description: r.get("description"),
       proposed_by: r.get("proposed_by"),
       type: r.get("type"),
-      criteria: r.get("criteria"),
+      criteria: H.decodeJsonValue(r.get("criteria")),
       estimated_freed_space: r.get("estimated_freed_space"),
       status: r.get("status"),
       votes_yes: r.get("votes_yes"),
@@ -307,18 +443,79 @@ onRecordAfterCreateSuccess(refreshAfterSave, "messages", "posts", "users");
 onRecordAfterUpdateSuccess(refreshAfterSave, "messages", "posts", "users");
 onRecordAfterDeleteSuccess(refreshAfterSave, "messages", "posts", "users");
 
-// notify mentioned users in chat messages
+// register file metadata for deletion proposals and storage tracking
+function registerStorageAfterSave(e) {
+  const H = require(__hooks + "/house_lib.js");
+  H.registerStorageFiles(e.app, e.record);
+  return e.next();
+}
+
+onRecordAfterCreateSuccess(registerStorageAfterSave, "messages", "posts", "users");
+onRecordAfterUpdateSuccess(registerStorageAfterSave, "messages", "posts", "users");
+
+// notify mentioned + reply targets in chat messages
 onRecordAfterCreateSuccess(function (e) {
   const H = require(__hooks + "/house_lib.js");
   const mentions = e.record.get("mentions") || [];
-  if (!mentions.length) return e.next();
-  for (let i = 0; i < mentions.length; i++) {
-    if (mentions[i] === e.record.get("user")) continue;
-    H.notify(e.app, mentions[i], "mention", "You were mentioned",
-      "You were mentioned in #" + (e.record.get("channel") || "chat") + ".", "/#/chat/" + e.record.get("channel"));
+  if (mentions.length) {
+    for (let i = 0; i < mentions.length; i++) {
+      if (mentions[i] === e.record.get("user")) continue;
+      H.notify(e.app, mentions[i], "mention", "You were mentioned",
+        "You were mentioned in #" + (e.record.get("channel") || "chat") + ".", "/#/chat/" + e.record.get("channel"));
+    }
+  }
+  const parentId = e.record.get("parent");
+  if (parentId) {
+    try {
+      const parent = e.app.findRecordById("messages", parentId);
+      const parentUserId = parent.get("user");
+      if (parentUserId && parentUserId !== e.record.get("user")) {
+        H.notify(e.app, parentUserId, "reply", "Someone replied to you",
+          "A reply was posted in #" + (e.record.get("channel") || "chat") + ".", "/#/chat/" + e.record.get("channel"));
+      }
+    } catch (err) {}
   }
   return e.next();
 }, "messages");
+
+// notify + maintain comment_count when a comment is added
+onRecordAfterCreateSuccess(function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const rec = e.record;
+  const postId = rec.get("post");
+  const author = rec.get("user");
+  const postAuthorName = "";
+  if (postId) {
+    try {
+      const post = e.app.findRecordById("posts", postId);
+      post.set("comment_count", (post.get("comment_count") || 0) + 1);
+      e.app.save(post);
+      const postAuthor = post.get("user");
+      let who = "Someone";
+      try {
+        const u = e.app.findRecordById("users", author);
+        who = u.get("username") || u.get("name") || "Someone";
+      } catch (err) {}
+      if (postAuthor && postAuthor !== author) {
+        H.notify(e.app, postAuthor, "forum", "New comment on your post",
+          who + " commented on \"" + String(post.get("title") || "your post").slice(0, 80) + "\".",
+          "/#/forum/post/" + postId);
+      }
+    } catch (err) {}
+  }
+  const parentId = rec.get("parent");
+  if (parentId) {
+    try {
+      const parent = e.app.findRecordById("comments", parentId);
+      const parentAuthor = parent.get("user");
+      if (parentAuthor && parentAuthor !== author) {
+        H.notify(e.app, parentAuthor, "reply", "Someone replied to your comment",
+          "You got a reply in the forum.", "/#/forum/post/" + postId);
+      }
+    } catch (err) {}
+  }
+  return e.next();
+}, "comments");
 
 // ---------------------------------------------------------------------------
 // Background jobs

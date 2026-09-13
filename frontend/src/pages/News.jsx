@@ -21,9 +21,7 @@ export default function News() {
     setError('');
     setItems([]);
     api(`/api/house/news?category=${cat}`)
-      .then((r) => {
-        if (alive) setItems(r.items || []);
-      })
+      .then((r) => { if (alive) setItems(r.items || []); })
       .catch((e) => alive && setError(e.message));
     return () => (alive = false);
   }, [cat]);
@@ -32,30 +30,21 @@ export default function News() {
     setRefreshing(true);
     setError('');
     try {
-      const r = await api('/api/house/news/refresh', {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
+      const r = await api('/api/house/news/refresh', { method: 'POST', body: JSON.stringify({}) });
       if (!r.refreshed) setError(r.message || 'Nothing to refresh right now');
       const fresh = await api(`/api/house/news?category=${cat}`);
       setItems(fresh.items || []);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setRefreshing(false);
-    }
+    } catch (e) { setError(e.message); }
+    finally { setRefreshing(false); }
   };
 
   return (
     <div className="card">
-      <div className="row between" style={{ marginBottom: 14 }}>
+      <div className="row between" style={{ marginBottom: 14, flexWrap: 'wrap', gap: 8 }}>
         <div className="row" style={{ flexWrap: 'wrap' }}>
           {cats.map(([id, label]) => (
-            <button
-              key={id}
-              className={`btn small ${cat === id ? '' : 'ghost'}`}
-              onClick={() => setCat(id)}
-            >
+            <button key={id} className={`btn small ${cat === id ? '' : 'ghost'}`}
+              onClick={() => setCat(id)}>
               {label}
             </button>
           ))}
@@ -68,18 +57,31 @@ export default function News() {
       {items.length === 0 && !error && <div className="muted">No news yet.</div>}
       {items.map((n) => (
         <div key={n.id} className="card" style={{ marginBottom: 10, background: 'var(--panel2)' }}>
-          <div className="row between">
-            <a href={n.url} target="_blank" rel="noreferrer" style={{ fontWeight: 600 }}>
-              {n.title}
-            </a>
-            <span className="muted">{n.source}</span>
-          </div>
-          <div className="muted" style={{ marginTop: 4 }}>
-            {new Date(n.created || Date.now()).toLocaleDateString()} ·{' '}
-            {n.score != null && <span>▲ {n.score} · </span>}
-            {n.matches && (
-              <span>{typeof n.matches === 'number' ? `${n.matches} games` : JSON.stringify(n.matches)}</span>
+          <div className="row" style={{ gap: 10, alignItems: 'flex-start' }}>
+            {n.thumbnail_url && (
+              <a href={n.url} target="_blank" rel="noreferrer">
+                <img src={n.thumbnail_url} alt="" style={{ width: 80, height: 60, borderRadius: 6, objectFit: 'cover' }} />
+              </a>
             )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <a href={n.url} target="_blank" rel="noreferrer" style={{ fontWeight: 600, fontSize: 14 }}>
+                {n.title}
+              </a>
+              <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
+                {n.source_name || '—'} ·{' '}
+                {n.published_at
+                  ? new Date(n.published_at).toLocaleDateString()
+                  : n.fetched_at
+                    ? new Date(n.fetched_at).toLocaleDateString()
+                    : '—'}
+                {n.metadata?.score != null && <span> · ▲ {n.metadata.score}</span>}
+              </div>
+              {n.summary && (
+                <div className="muted" style={{ fontSize: 12, marginTop: 3, whiteSpace: 'pre-wrap' }}>
+                  {n.summary.slice(0, 200)}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       ))}

@@ -102,7 +102,7 @@ export default function Storage() {
           <>
             <div className="row between">
               <strong>{fmtBytes(st.used_bytes)}</strong>
-              <span className="muted">/ {fmtBytes(st.limit_bytes)} (10 GB)</span>
+              <span className="muted">/ {fmtBytes(st.limit_bytes)}</span>
             </div>
             <div className="expander" style={{ margin: '10px 0' }}>
               <div style={{ width: `${Math.min(pct, 100)}%` }} />
