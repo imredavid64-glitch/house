@@ -192,6 +192,53 @@ routerAdd("POST", "/api/house/smash/matches", function (e) {
   return e.json(200, { success: true, id: rec.id });
 }, $apis.requireAuth());
 
+routerAdd("GET", "/api/house/smash/matches", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const matches = e.app.findRecordsByFilter("smash_matches", "", "-created", 50, 0);
+  const out = [];
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    out.push({
+      id: m.id,
+      player1: m.get("player1"),
+      player2: m.get("player2"),
+      winner: m.get("winner"),
+      character1: m.get("character1"),
+      character2: m.get("character2"),
+      stage: m.get("stage"),
+      is_ranked: m.getBool("is_ranked"),
+      created_by: m.get("created_by"),
+      created: m.get("created"),
+    });
+  }
+  return e.json(200, { matches: out });
+}, $apis.requireAuth());
+
+// ---- forum post & comment votes (auth) ----
+routerAdd("POST", "/api/house/posts/{id}/vote", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  const val = body && body.value !== undefined ? Number(body.value) : 1;
+  const result = H.voteOnPost(e.app, e.auth, id, val);
+  return e.json(200, result);
+}, $apis.requireAuth());
+
+routerAdd("POST", "/api/house/comments/{id}/vote", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const id = e.request.pathValue("id");
+  const body = e.requestInfo().body;
+  const val = body && body.value !== undefined ? Number(body.value) : 1;
+  const result = H.voteOnComment(e.app, e.auth, id, val);
+  return e.json(200, result);
+}, $apis.requireAuth());
+
+routerAdd("GET", "/api/house/user/votes", function (e) {
+  const H = require(__hooks + "/house_lib.js");
+  const result = H.getUserVotes(e.app, e.auth.id);
+  return e.json(200, result);
+}, $apis.requireAuth());
+
 // ---- deletion proposals (auth) ----
 routerAdd("GET", "/api/house/deletion/proposals", function (e) {
   const H = require(__hooks + "/house_lib.js");

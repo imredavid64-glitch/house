@@ -227,8 +227,8 @@ function generateInviteKeys(app, count, adminId) {
 }
 
 function registerWithKey(app, body) {
-  const key = body.get ? body.get("key") : body.key;
-  const username = body.get ? body.get("username") : body.username;
+  const key = (body.get ? body.get("key") : body.key) || (body.get ? body.get("invite_key") : body.invite_key);
+  const username = (body.get ? body.get("username") : body.username) || (body.get ? body.get("name") : body.name);
   const email = body.get ? body.get("email") : body.email;
   const password = body.get ? body.get("password") : body.password;
 
@@ -887,6 +887,133 @@ function autoPropose(app) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// forum post & comment voting
+// ---------------------------------------------------------------------------
+
+function voteOnPost(app, user, postId, value) {
+  let post;
+  try {
+    post = app.findRecordById("posts", postId);
+  } catch (e) {
+    throw new NotFoundError("Post not found");
+  }
+
+  let vote = null;
+  let prevValue = 0;
+  try {
+    vote = app.findFirstRecordByFilter("votes", "post = {:p} && user = {:u}", { p: postId, u: user.id });
+    prevValue = Number(vote.get("value")) || 0;
+  } catch (e) {}
+
+  if (value === 0 || value === prevValue) {
+    // toggle off / remove vote
+    if (vote) app.delete(vote);
+    value = 0;
+  } else {
+    if (!vote) {
+      vote = new Record(app.findCollectionByNameOrId("votes"));
+      vote.set("user", user.id);
+      vote.set("post", postId);
+    }
+    vote.set("value", value);
+    app.save(vote);
+  }
+
+  // Recalculate upvotes and downvotes
+  const allVotes = app.findRecordsByFilter("votes", "post = {:p}", "", 0, 0, { p: postId });
+  let up = 0, down = 0;
+  for (let i = 0; i < allVotes.length; i++) {
+    const v = Number(allVotes[i].get("value")) || 0;
+    if (v > 0) up++;
+    else if (v < 0) down++;
+  }
+  post.set("upvotes", up);
+  post.set("downvotes", down);
+  app.save(post);
+
+  // Update author karma
+  const authorId = post.get("user");
+  if (authorId) {
+    try {
+      const author = app.findRecordById("users", authorId);
+      const delta = value - prevValue;
+      const curKarma = Number(author.get("karma")) || 0;
+      author.set("karma", Math.max(0, curKarma + delta));
+      app.save(author);
+    } catch (e) {}
+  }
+
+  return { upvotes: up, downvotes: down, score: up - down, userVote: value };
+}
+
+function voteOnComment(app, user, commentId, value) {
+  let comment;
+  try {
+    comment = app.findRecordById("comments", commentId);
+  } catch (e) {
+    throw new NotFoundError("Comment not found");
+  }
+
+  let vote = null;
+  let prevValue = 0;
+  try {
+    vote = app.findFirstRecordByFilter("votes", "comment = {:c} && user = {:u}", { c: commentId, u: user.id });
+    prevValue = Number(vote.get("value")) || 0;
+  } catch (e) {}
+
+  if (value === 0 || value === prevValue) {
+    if (vote) app.delete(vote);
+    value = 0;
+  } else {
+    if (!vote) {
+      vote = new Record(app.findCollectionByNameOrId("votes"));
+      vote.set("user", user.id);
+      vote.set("comment", commentId);
+    }
+    vote.set("value", value);
+    app.save(vote);
+  }
+
+  const allVotes = app.findRecordsByFilter("votes", "comment = {:c}", "", 0, 0, { c: commentId });
+  let up = 0, down = 0;
+  for (let i = 0; i < allVotes.length; i++) {
+    const v = Number(allVotes[i].get("value")) || 0;
+    if (v > 0) up++;
+    else if (v < 0) down++;
+  }
+  comment.set("upvotes", up);
+  comment.set("downvotes", down);
+  app.save(comment);
+
+  const authorId = comment.get("user");
+  if (authorId) {
+    try {
+      const author = app.findRecordById("users", authorId);
+      const delta = value - prevValue;
+      const curKarma = Number(author.get("karma")) || 0;
+      author.set("karma", Math.max(0, curKarma + delta));
+      app.save(author);
+    } catch (e) {}
+  }
+
+  return { upvotes: up, downvotes: down, score: up - down, userVote: value };
+}
+
+function getUserVotes(app, userId) {
+  const votes = app.findRecordsByFilter("votes", "user = {:u}", "", 1000, 0, { u: userId });
+  const postVotes = {};
+  const commentVotes = {};
+  for (let i = 0; i < votes.length; i++) {
+    const p = votes[i].get("post");
+    const c = votes[i].get("comment");
+    const val = Number(votes[i].get("value")) || 0;
+    if (p) postVotes[p] = val;
+    if (c) commentVotes[c] = val;
+  }
+  return { posts: postVotes, comments: commentVotes };
+}
+
 module.exports = {
   nowISO: nowISO,
   daysAgoISO: daysAgoISO,
@@ -916,4 +1043,7 @@ module.exports = {
   autoPropose: autoPropose,
   refreshNewsCategory: fetchReddit,
   setNewsTTL: null,
+  voteOnPost: voteOnPost,
+  voteOnComment: voteOnComment,
+  getUserVotes: getUserVotes,
 };

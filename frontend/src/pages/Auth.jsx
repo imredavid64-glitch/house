@@ -25,7 +25,9 @@ export default function Auth({ onAuth }) {
           body: JSON.stringify({
             email: identity,
             password,
+            username: name || identity.split('@')[0],
             name: name || identity.split('@')[0],
+            key: invite.trim(),
             invite_key: invite.trim(),
           }),
         });
