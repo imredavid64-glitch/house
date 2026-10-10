@@ -1,0 +1,4 @@
+project_id = "mvacjabgynoabpsekejl"
+
+[functions.house]
+verify_jwt = false
