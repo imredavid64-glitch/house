@@ -1,7 +1,10 @@
 // Integration tests for the House Supabase backend.
 // Run: node --test tests/supabase.test.mjs
-// Requires nothing for public tests; set SUPABASE_SERVICE_KEY to run the full
-// suite (register->login, RLS writes, triggers, votes, and cleanup).
+// Public tests need no config. To run the full suite set:
+//   ADMIN_PASSWORD     - admin account password (enables admin tests)
+//   SUPABASE_SERVICE_KEY - service_role key (enables writes + cleanup)
+//   CRON_SECRET        - edge-function cron secret (enables the cron test)
+//   ADMIN_EMAIL / SUPABASE_URL / SUPABASE_ANON_KEY optional overrides.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -14,10 +17,11 @@ const ANON =
 const SERVICE = process.env.SUPABASE_SERVICE_KEY || "";
 const FN = `${URL}/functions/v1/house`;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || "imredavid64@gmail.com";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "HouseAdmin1234!";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const CRON_SECRET = process.env.CRON_SECRET || "";
 
 const hasService = SERVICE.length > 0;
+const hasAdmin = ADMIN_PASSWORD.length > 0;
 
 async function signIn(email, password) {
   const res = await fetch(`${URL}/auth/v1/token?grant_type=password`, {
@@ -85,6 +89,7 @@ const state = {
 };
 
 before(async () => {
+  if (!hasAdmin) return;
   state.adminToken = await signIn(ADMIN_EMAIL, ADMIN_PASSWORD);
   const me = await rest("profiles", state.adminToken, {
     method: "GET",
@@ -132,32 +137,32 @@ test("cron route accepts the correct secret", { skip: !CRON_SECRET }, async () =
 // ---------------------------------------------------------------------------
 // admin surface
 // ---------------------------------------------------------------------------
-test("admin can read settings", async () => {
+test("admin can read settings", { skip: !hasAdmin }, async () => {
   const r = await fn("/api/house/settings", state.adminToken, { method: "GET" });
   assert.equal(r.status, 200);
   assert.ok("storage_limit_bytes" in r.json);
 });
 
-test("admin can read storage overview", async () => {
+test("admin can read storage overview", { skip: !hasAdmin }, async () => {
   const r = await fn("/api/house/storage", state.adminToken, { method: "GET" });
   assert.equal(r.status, 200);
   assert.equal(typeof r.json.limit_bytes, "number");
   assert.equal(typeof r.json.used_bytes, "number");
 });
 
-test("admin can list invites", async () => {
+test("admin can list invites", { skip: !hasAdmin }, async () => {
   const r = await fn("/api/house/invites", state.adminToken, { method: "GET" });
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.json));
 });
 
-test("news returns an items array", async () => {
+test("news returns an items array", { skip: !hasAdmin }, async () => {
   const r = await fn("/api/house/news?category=tech", state.adminToken, { method: "GET" });
   assert.equal(r.status, 200);
   assert.ok(Array.isArray(r.json.items));
 });
 
-test("gaming endpoints respond", async () => {
+test("gaming endpoints respond", { skip: !hasAdmin }, async () => {
   const mc = await fn("/api/house/minecraft/status", state.adminToken, { method: "GET" });
   assert.equal(mc.status, 200);
   const rb = await fn("/api/house/roblox", state.adminToken, { method: "GET" });
@@ -171,7 +176,7 @@ test("gaming endpoints respond", async () => {
 // ---------------------------------------------------------------------------
 // full flow (requires service key for invite creation + cleanup)
 // ---------------------------------------------------------------------------
-test("invite -> register -> login -> non-admin blocked", { skip: !hasService }, async () => {
+test("invite -> register -> login -> non-admin blocked", { skip: !hasAdmin || !hasService }, async () => {
   const gen = await fn("/api/house/invites", state.adminToken, {
     method: "POST",
     body: JSON.stringify({ count: 1 }),
@@ -196,7 +201,7 @@ test("invite -> register -> login -> non-admin blocked", { skip: !hasService }, 
   assert.equal(blocked.status, 403);
 });
 
-test("RLS: user reads channels and inserts a message", { skip: !hasService }, async () => {
+test("RLS: user reads channels and inserts a message", { skip: !hasAdmin || !hasService }, async () => {
   const ch = await rest("channels?select=id,name&order=name", state.userToken, {
     method: "GET",
     headers: { Prefer: "" },
@@ -219,7 +224,7 @@ test("RLS: user reads channels and inserts a message", { skip: !hasService }, as
   assert.ok(state.msgId);
 });
 
-test("mention trigger notifies the admin", { skip: !hasService }, async () => {
+test("mention trigger notifies the admin", { skip: !hasAdmin || !hasService }, async () => {
   const n = await rest(
     `notifications?select=type,title,user&user=eq.${state.adminId}&order=created.desc&limit=5`,
     state.adminToken,
@@ -229,7 +234,7 @@ test("mention trigger notifies the admin", { skip: !hasService }, async () => {
   assert.ok(n.json.some((x) => x.type === "mention" && x.user === state.adminId));
 });
 
-test("comment trigger increments comment_count", { skip: !hasService }, async () => {
+test("comment trigger increments comment_count", { skip: !hasAdmin || !hasService }, async () => {
   const ch = await rest("spaces?select=id&limit=1", state.adminToken, {
     method: "GET",
     headers: { Prefer: "" },
@@ -255,7 +260,7 @@ test("comment trigger increments comment_count", { skip: !hasService }, async ()
   assert.equal(after.json[0].comment_count, 1);
 });
 
-test("voting updates counts and toggles", { skip: !hasService }, async () => {
+test("voting updates counts and toggles", { skip: !hasAdmin || !hasService }, async () => {
   const up = await fn(`/api/house/posts/${state.postId}/vote`, state.adminToken, {
     method: "POST",
     body: JSON.stringify({ value: 1 }),
@@ -270,7 +275,7 @@ test("voting updates counts and toggles", { skip: !hasService }, async () => {
   assert.equal(clear.json.upvotes, 0);
 });
 
-test("poll create + vote", { skip: !hasService }, async () => {
+test("poll create + vote", { skip: !hasAdmin || !hasService }, async () => {
   const create = await fn(`/api/house/posts/${state.postId}/poll`, state.adminToken, {
     method: "POST",
     body: JSON.stringify({ options: ["A", "B"] }),
@@ -287,7 +292,7 @@ test("poll create + vote", { skip: !hasService }, async () => {
   assert.equal(vote.json.poll.total, 1);
 });
 
-test("message reaction toggles", { skip: !hasService }, async () => {
+test("message reaction toggles", { skip: !hasAdmin || !hasService }, async () => {
   const add = await fn(`/api/house/messages/${state.msgId}/reaction`, state.adminToken, {
     method: "POST",
     body: JSON.stringify({ emoji: "ok" }),
@@ -302,7 +307,7 @@ test("message reaction toggles", { skip: !hasService }, async () => {
   assert.equal(remove.json.reactions["ok"], undefined);
 });
 
-test("smash match recorded + ranked", { skip: !hasService }, async () => {
+test("smash match recorded + ranked", { skip: !hasAdmin || !hasService }, async () => {
   const m = await fn("/api/house/smash/matches", state.adminToken, {
     method: "POST",
     body: JSON.stringify({
